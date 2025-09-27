@@ -2,10 +2,12 @@
 
 This folder contains all files and documentation related to the user interface and application development for the Senior Design project.
 
+**People working on this:**
+
 ## Contents
 - User interface designs and mockups
 - Application frontend code
-- User experience (UX) documentation
+- User experience documentation
 - UI/UX testing and validation
 - Responsive design implementations
 
@@ -22,4 +24,4 @@ This folder contains all files and documentation related to the user interface a
 - Performance optimization guidelines
 
 ## Status
-🔄 In Progress - UI design and prototyping phase
+In Progress
