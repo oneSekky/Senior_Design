@@ -16,9 +16,8 @@ This folder contains all documentation and implementation files related to the s
 - Memory and computational efficiency metrics
 
 ## Implementation
-- Programming language: [To be determined]
+- Programming language: Python (or MATLAB)
 - Required libraries and dependencies
-- Hardware acceleration considerations
 
 ## Status
-🔄 In Progress - Algorithm design and testing phase
+In Progress
