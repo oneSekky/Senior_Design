@@ -2,6 +2,8 @@
 
 This folder contains all documentation and implementation files related to the signal processing algorithms and digital signal processing components for the Senior Design project.
 
+**People working on this:**
+
 ## Contents
 - Algorithm design and mathematical models
 - Signal filtering and noise reduction implementations
