@@ -1,0 +1,24 @@
+# Signal Processing Algorithm
+
+This folder contains all documentation and implementation files related to the signal processing algorithms and digital signal processing components for the Senior Design project.
+
+## Contents
+- Algorithm design and mathematical models
+- Signal filtering and noise reduction implementations
+- Real-time processing algorithms
+- Performance optimization code
+- Algorithm testing and validation scripts
+
+## Technical Specifications
+- Input signal specifications
+- Processing requirements and constraints
+- Real-time performance targets
+- Memory and computational efficiency metrics
+
+## Implementation
+- Programming language: [To be determined]
+- Required libraries and dependencies
+- Hardware acceleration considerations
+
+## Status
+🔄 In Progress - Algorithm design and testing phase
