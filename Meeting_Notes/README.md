@@ -1,10 +1,9 @@
 # Meeting Notes
 
-This folder contains all meeting notes and documentation related to team meetings, stakeholder discussions, and project review sessions for the Senior Design project.
+This folder contains all meeting notes and documentation related to team meetings, Vallancourt meetings, and project review sessions.
 
 ## Contents
 - Team meeting minutes
-- Stakeholder feedback sessions
 - Progress review meetings
 - Decision logs and action items
 
