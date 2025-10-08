@@ -6,3 +6,6 @@
 
 ## Google Slides
 - [Proposal Slides](https://docs.google.com/presentation/d/1WSdsIHReffal84a1b-OSyfmAUy1gLlpkEgiUON6pyuE/edit?usp=sharing)
+
+## Datasheets
+- [lsm6dsop (IMU- Accelerometer & Gyroscope)](https://drive.google.com/file/d/1BkcEwKL4CM6QTToeDLU50A9yM5oN5qaU/view?usp=sharing)
