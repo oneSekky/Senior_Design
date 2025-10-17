@@ -12,3 +12,4 @@
 
 ## EE Department
 - [Parts Ordering Spreadsheet](https://docs.google.com/spreadsheets/d/1-QixXUoP6tTL5zMLHMplbVugZ_QZzaq_URWmXCjOkws/edit?gid=991355270#gid=991355270)
+- ^^ This is view only as of 10/17, so not sure how to order right now
