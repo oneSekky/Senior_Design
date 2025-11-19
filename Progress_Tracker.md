@@ -14,5 +14,8 @@ This document tracks the overall progress of all components and subprojects with
 
 ---
 
-*Last Updated: September 27, 2025*  
+**November 18, 2025**
+- Recieved Steval evaluation board and test kit for IMU proof of concept testing
+
+*Last Updated: November 18, 2025*  
 *Next Review: [To be scheduled]*
