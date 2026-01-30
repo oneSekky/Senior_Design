@@ -13,6 +13,7 @@
 
 ### Test 2
 Words written: Hello World
+
 Test2.csv
 
 Settings:
@@ -24,6 +25,7 @@ Settings:
 
 ### Test 3
 Words written: 'A' a bunch of times
+
 Test3_same_strokes.csv
 
 Settings:
