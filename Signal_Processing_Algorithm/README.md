@@ -1,154 +1,182 @@
-# Signal Processing Algorithm - Letter Recognition Pipeline
+# Signal Processing Algorithm
 
 ## Overview
 
-This folder contains a complete, minimal pipeline for recognizing handwritten letters from accelerometer/gyroscope data collected from a pen-mounted IMU sensor.
+This folder contains two main pipelines for processing accelerometer/gyroscope data from a pen-mounted IMU sensor:
+
+1. **Trajectory Reconstruction** - Convert IMU data into actual pen stroke coordinates (X,Y paths)
+2. **Letter Recognition** - Classify strokes into recognized letters
 
 **Status**: ✅ Complete and functional
 
-## Quick Start
-
-```bash
-# Install dependencies
-cd Signal_Processing_Algorithm
-python3 -m venv venv
-./venv/bin/pip install pandas numpy scipy fastdtw matplotlib
-
-# Run tests
-./venv/bin/python test_with_tuned_params.py    # Test segmentation
-./venv/bin/python analyze_data.py              # Analyze data characteristics
-
-# Run full pipeline demo (when you have training data)
-./venv/bin/python letter_recognition_pipeline.py
-```
-
 ## Files
 
-### Core Pipeline Modules
-- **`stroke_segmentation.py`** - Detects individual letter strokes from continuous data
-- **`feature_extraction.py`** - Extracts features from each stroke for classification
-- **`classifier.py`** - DTW-based and feature-based classifiers
-- **`letter_recognition_pipeline.py`** - Main pipeline combining all stages
+- **`data_reader.py`** - CSV data loader
+- **`stroke_segmentation.py`** - Detects individual letter strokes
+- **`trajectory_reconstruction.py`** - Converts IMU data to X,Y coordinates
+- **`feature_extraction.py`** - Extracts features for classification
+- **`classifier.py`** - DTW-based classifier
+- **`letter_recognition_pipeline.py`** - Complete letter recognition pipeline
 
-### Utilities & Testing
-- **`data_reader.py`** - CSV data loader (pre-existing)
-- **`analyze_data.py`** - Analyze motion characteristics to tune parameters
-- **`test_with_tuned_params.py`** - Test segmentation with dataset-specific parameters
-- **`simple_test.py`** - Basic segmentation test
-- **`config.py`** - Configuration parameters
+## 1. Trajectory Reconstruction
 
-### Documentation
-- **`USAGE.md`** - Detailed usage guide
-- **`PIPELINE_OVERVIEW.md`** - Architecture and design decisions
-- **`requirements.txt`** - Python dependencies
+Converts accelerometer data into actual pen strokes (X,Y coordinates).
 
-## How It Works
+### How It Works
 
 ```
-Raw CSV → Segment Strokes → Extract Features → Classify → Output Text
+IMU Data → Remove Gravity → Filter Noise → Double Integration → X,Y Trajectory
 ```
 
-1. **Segmentation**: Detects when pen is writing vs. lifted using motion magnitude
-2. **Feature Extraction**: Characterizes each stroke (duration, acceleration patterns, etc.)
-3. **Classification**: Matches strokes to letter templates using DTW (Dynamic Time Warping)
-4. **Output**: Returns recognized text
+1. Removes gravity component from acceleration
+2. Applies low-pass filter to reduce noise
+3. Integrates acceleration → velocity → position
+4. Outputs 2D (X,Y) or 3D coordinates
 
-## Current Test Results
+### Usage
 
-### Test2.csv (Hello World)
-- ✅ Successfully segments into 15 strokes (expected ~11 for "Hello World")
-- Has active gyroscope data
-- Good motion detection
+```python
+from data_reader import read_accelerometer_csv
+from trajectory_reconstruction import reconstruct_trajectory, save_trajectory_svg
 
-### Test3.csv (Multiple A's)
-- ⚠️ Limited segmentation (4 strokes detected)
-- **Issue**: Gyroscope is disabled (all zeros)
-- Relies only on acceleration, making stroke detection harder
+# Load data
+df = read_accelerometer_csv('path/to/data.csv')
 
-## Key Findings
+# Reconstruct trajectory
+trajectory, velocity, time = reconstruct_trajectory(df, cutoff_freq=3.0)
 
-1. **Gyroscope is critical** for good stroke detection
-   - Test2 (gyro active): Good segmentation
-   - Test3 (gyro inactive): Poor segmentation
+# trajectory is now an array of (X, Y) coordinates in meters
 
-2. **Thresholds need tuning per dataset**
-   - Test2 works with `threshold=200`
-   - Test3 needs `threshold=15` due to no gyroscope
+# Save as SVG for graphics software
+save_trajectory_svg(trajectory, 'output.svg')
 
-3. **Motion characteristics vary significantly**
-   - Different sampling rates (416Hz vs 833Hz)
-   - Different sensor configurations
-   - Need adaptive thresholding
+# Or export as JSON for web apps
+export_trajectory_json(trajectory, 'output.json')
+```
 
-## Next Steps
+### For Individual Strokes
 
-### Immediate (To Make It Work Better)
-1. **Enable gyroscope** for all future data collection
-2. **Collect training data** - Write each letter (A-Z) 3-5 times
-3. **Label training data** - Note which strokes are which letters
-4. **Train the classifier** - Use `pipeline.train(csv, labels)`
-5. **Test recognition** - Try recognizing new handwriting
+```python
+from stroke_segmentation import segment_strokes
+from trajectory_reconstruction import reconstruct_stroke_trajectory
 
-### Short Term Improvements
-6. Add manual stroke labeling tool
-7. Implement adaptive threshold based on data statistics
-8. Add confidence scoring for classifications
-9. Detect and handle spaces between words
+# Segment into individual letters
+strokes = segment_strokes(df, threshold=200, min_samples=20)
 
-### Long Term Enhancements
-10. Drift correction for trajectory reconstruction
-11. Orientation calibration
-12. Neural network classifier (LSTM/GRU)
-13. Real-time streaming mode
-14. User-specific adaptation
+# Reconstruct each stroke
+for i, stroke in enumerate(strokes):
+    traj = reconstruct_stroke_trajectory(stroke['data'])
+    save_trajectory_svg(traj, f'letter_{i}.svg')
+```
 
-## Usage Example
+### Output Formats
+
+- **NumPy array**: Direct use in Python (X,Y coordinates)
+- **SVG**: Vector graphics for design software (Illustrator, Inkscape, etc.)
+- **JSON**: For web applications and JavaScript
+
+## 2. Letter Recognition
+
+Classifies strokes into recognized letters using DTW template matching.
+
+### How It Works
+
+```
+CSV File → Segment Strokes → Extract Features → DTW Matching → Letters
+```
+
+### Usage
 
 ```python
 from letter_recognition_pipeline import LetterRecognitionPipeline
 
-# Create and train pipeline
+# Create pipeline
 pipeline = LetterRecognitionPipeline(use_dtw=True)
 
-# Train with labeled data (you need to create this)
+# Train with labeled data
 labels = ['A', 'A', 'A', 'B', 'B', 'B', 'C', 'C', 'C']
 pipeline.train('training_data.csv', labels)
 
 # Recognize new data
 text, results = pipeline.recognize('test_data.csv')
 print(f"Recognized: {text}")
-
-# Results contain (letter, confidence) for each stroke
-for letter, confidence in results:
-    print(f"  {letter}: {confidence:.2f}")
 ```
 
-## Known Limitations
+## Key Challenges & Solutions
 
-1. **Requires labeled training data** for each letter
-2. **No drift correction** - integration errors accumulate
-3. **Orientation dependent** - assumes consistent sensor mounting
-4. **Threshold tuning required** per person/dataset
-5. **No space detection** yet
-6. **Gyroscope critical** for good performance
+### Challenge: Integration Drift
+**Problem**: Double integration causes position errors to accumulate  
+**Solution**: Zero-velocity updates (ZUPT) reset velocity during stationary periods
 
-## Technical Specifications
+### Challenge: Gyroscope Data
+**Problem**: Test3 has gyroscope disabled (all zeros)  
+**Impact**: Much harder to detect stroke boundaries  
+**Solution**: Enable gyroscope for all data collection
 
-**Input Format**: CSV with columns
+### Challenge: Stroke Segmentation
+**Problem**: Different datasets need different thresholds  
+**Solution**: Tune parameters per dataset or use adaptive thresholding
+
+## Test Results
+
+**Test2.csv (Hello World)** - With gyroscope:
+- ✅ Good stroke segmentation (15-18 strokes)
+- ✅ Trajectory reconstruction works
+- Range: ~0.01-0.9 meters
+
+**Test3.csv (Multiple A's)** - Without gyroscope:
+- ⚠️ Poor segmentation (only 4 strokes detected)
+- ✅ Trajectory still reconstructs
+- **Recommendation**: Re-collect with gyroscope enabled
+
+## Parameters to Tune
+
+### Stroke Segmentation
+```python
+segment_strokes(df, 
+    threshold=200,    # Motion intensity (higher = less sensitive)
+    min_samples=20,   # Minimum stroke length
+    merge_gap=100     # Merge nearby strokes
+)
+```
+
+### Trajectory Reconstruction
+```python
+reconstruct_trajectory(df,
+    cutoff_freq=3.0,  # Low-pass filter (lower = smoother, more lag)
+    remove_z=True     # 2D vs 3D output
+)
+```
+
+## Next Steps
+
+### For Better Trajectory Reconstruction
+1. Implement advanced drift correction (Kalman filter, UWB fusion)
+2. Add orientation calibration
+3. Use gyroscope for rotation tracking
+4. Implement complementary filter for sensor fusion
+
+### For Letter Recognition
+1. Collect full alphabet training data (A-Z, multiple samples each)
+2. Label training data properly
+3. Try neural network (LSTM/GRU) instead of DTW
+4. Add word/space detection
+
+## Dependencies
+
+```bash
+pip install pandas numpy scipy fastdtw matplotlib
+```
+
+## Technical Notes
+
+**Input Format**: CSV with columns:
 - `time[us]` - Timestamp in microseconds
 - `acc_x[mg]`, `acc_y[mg]`, `acc_z[mg]` - Acceleration in milligravity
-- `gyro_x[mdps]`, `gyro_y[mdps]`, `gyro_z[mdps]` - Gyroscope in millidegrees/sec
+- `gyro_x[mdps]`, `gyro_y[mdps]`, `gyro_z[mdps]` - Gyroscope (optional but recommended)
 
-**Output**: Recognized text string and confidence scores
+**Sensor**: LSM6DSO16IS (from your test data)
 
-**Dependencies**: pandas, numpy, scipy, fastdtw, matplotlib
+**Sampling Rates**: 416Hz or 833Hz (both work)
 
-## People Working On This
-
-(Add names here)
-
-## References & Resources
-
-- Dynamic Time Warping: Used for template matching
-- Gesture Recognition: Similar to handwriting recognition
-- IMU Sensor: LSM6DSO16IS (from your test data)
+**Critical**: Gyroscope data is essential for good stroke detection!
