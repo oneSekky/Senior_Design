@@ -1,0 +1,7 @@
+# Ignore Claude-related files in Senior_Design folder
+.claude/
+.claude_code/
+claude_*.log
+.claude_cache/
+.aider*
+claude.md
