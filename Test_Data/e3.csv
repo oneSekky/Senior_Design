@@ -1,0 +1,3 @@
+# STEVAL-MKI229A (LSM6DSO16IS) 
+
+time[us],acc_x[mg],acc_y[mg],acc_z[mg],gyro_x[mdps],gyro_y[mdps],gyro_z[mdps],temp[C],acc_x[LSB],acc_y[LSB],acc_z[LSB],gyro_x[LSB],gyro_y[LSB],gyro_z[LSB],temp[LSB],int_1,int_2
