@@ -17,5 +17,9 @@ This document tracks the overall progress of all components and subprojects with
 **November 18, 2025**
 - Recieved Steval evaluation board and test kit for IMU proof of concept testing
 
-*Last Updated: November 18, 2025*  
+
+**February 3, 2026**
+- The IMU is working, we are gathering data and assessing viability
+
+*Last Updated: February 3, 2026*  
 *Next Review: [To be scheduled]*
