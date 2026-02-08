@@ -1,0 +1,9 @@
+numpy
+pandas
+matplotlib
+pillow
+scipy
+scikit-learn
+tensorflow
+svglib
+reportlab

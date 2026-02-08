@@ -5,3 +5,7 @@ claude_*.log
 .claude_cache/
 .aider*
 claude.md
+
+# Large model files
+*.keras
+*.pkl

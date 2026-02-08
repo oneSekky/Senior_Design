@@ -1,0 +1,82 @@
+{
+  "total": 18,
+  "good": 18,
+  "bad": 0,
+  "skipped": 0,
+  "evaluated": 18,
+  "accuracy": 100.0,
+  "files": [
+    {
+      "file": "a1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a10_c.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a1_c+1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a2.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a2_c+l.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a3.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a3_c+1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a4_c+l.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a5_c+l.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a6_c+1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a7_c+1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a8_c.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a9_c.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a_1.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a_2.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a_3.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a_4.csv",
+      "rating": "good"
+    },
+    {
+      "file": "a_5.csv",
+      "rating": "good"
+    }
+  ]
+}
