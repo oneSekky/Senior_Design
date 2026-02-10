@@ -1,5 +1,8 @@
 # Links to all External Documents 
 
+## Potential Parts
+- [SPI to USB-C breakout board](https://www.digikey.com/en/products/detail/adafruit-industries-llc/2264/5761217)
+
 
 ## Google Docs
 - [Project Proposal](https://docs.google.com/document/d/1a6M6tO41kHgW0A4aRwFVjNW7UuTfEoVMQXW2x_JmQIE/edit?usp=sharing)
