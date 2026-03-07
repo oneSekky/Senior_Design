@@ -116,12 +116,79 @@ def find_lines(gray, axis, n_lines):
             break
 
     if len(selected) < n_lines:
-        raise RuntimeError(
-            f"Only {len(selected)} well-separated lines found, need {n_lines} (axis={axis}). "
-            f"All peaks: {[(round(v, 1), p) for v, p in peaks]}"
+        print(
+            f"    WARNING: Only {len(selected)} well-separated lines found, need {n_lines} (axis={axis}). "
+            f"Will attempt fallback."
         )
+        # Lower threshold and retry
+        threshold2 = profile.mean()
+        above2 = np.where(profile > threshold2)[0]
+        if len(above2) > 0:
+            clusters2 = []
+            run2 = [above2[0]]
+            for idx in above2[1:]:
+                if idx - run2[-1] <= STRIP_WIDTH:
+                    run2.append(idx)
+                else:
+                    clusters2.append(run2)
+                    run2 = [idx]
+            clusters2.append(run2)
+            peaks2 = []
+            for c in clusters2:
+                best = c[int(np.argmax(profile[c]))]
+                peaks2.append((float(profile[best]), best))
+            peaks2.sort(key=lambda x: -x[0])
+            selected = []
+            for score, pos in peaks2:
+                if all(abs(pos - s) >= MIN_LINE_GAP for s in selected):
+                    selected.append(pos)
+                if len(selected) == n_lines:
+                    break
 
     return sorted(selected)
+
+
+def validate_line_spacing(lines, n_lines, label):
+    """Check if detected lines have roughly uniform spacing.
+    Returns True if OK, False if spacing is too irregular."""
+    if len(lines) < 2:
+        return False
+    gaps = [lines[i + 1] - lines[i] for i in range(len(lines) - 1)]
+    median_gap = float(np.median(gaps))
+    if median_gap == 0:
+        return False
+    for g in gaps:
+        if abs(g - median_gap) / median_gap > 0.35:
+            print(f"  WARNING: irregular {label} spacing: gaps={gaps}, median={median_gap:.0f}")
+            return False
+    return True
+
+
+def evenly_spaced_lines(first, last, n_lines):
+    """Generate n_lines evenly spaced positions from first to last."""
+    return [int(round(first + i * (last - first) / (n_lines - 1))) for i in range(n_lines)]
+
+
+def detect_vlines_in_band(gray, y_start, y_end, n_lines):
+    """Detect vertical lines in a horizontal band. Returns list or None."""
+    band = gray[y_start:y_end, :]
+    if band.shape[0] < 10:
+        return None
+    try:
+        raw = find_lines(band, axis=0, n_lines=n_lines)
+    except RuntimeError:
+        return None
+    if len(raw) < n_lines:
+        return None
+    return raw
+
+
+def interpolate_vlines(top_vlines, bot_vlines, top_y, bot_y, target_y):
+    """Linearly interpolate vline x-positions between top and bottom bands."""
+    if bot_y == top_y:
+        return top_vlines
+    t = (target_y - top_y) / (bot_y - top_y)
+    return [int(round(tv + t * (bv - tv))) for tv, bv in zip(top_vlines, bot_vlines)]
 
 
 def crop_page(stem, img_filename):
@@ -134,14 +201,16 @@ def crop_page(stem, img_filename):
         EDGE_CROP_TOP : h - EDGE_CROP_BOTTOM, EDGE_CROP_LEFT : w - EDGE_CROP_RIGHT
     ]
 
-    vlines = [
-        x + EDGE_CROP_LEFT for x in find_lines(gray_inner, axis=0, n_lines=N_VLINES)
-    ]
-    hlines = [
-        y + EDGE_CROP_TOP for y in find_lines(gray_inner, axis=1, n_lines=N_HLINES)
-    ]
+    # Detect horizontal lines globally (these are reliable on all pages)
+    raw_hlines = find_lines(gray_inner, axis=1, n_lines=N_HLINES)
+    hlines = [y + EDGE_CROP_TOP for y in raw_hlines]
 
-    print(f"  vlines ({len(vlines)}): {vlines}")
+    if len(hlines) < N_HLINES or not validate_line_spacing(hlines, N_HLINES, "hline"):
+        print(f"  Falling back to evenly spaced hlines ({len(hlines)} detected, need {N_HLINES})")
+        first_h = hlines[0] if hlines else EDGE_CROP_TOP
+        last_h = hlines[-1] if hlines else h - EDGE_CROP_BOTTOM
+        hlines = evenly_spaced_lines(first_h, last_h, N_HLINES)
+
     print(f"  hlines ({len(hlines)}): {hlines}")
 
     row_spacing = (hlines[-1] - hlines[0]) / (len(hlines) - 1)
@@ -156,6 +225,53 @@ def crop_page(stem, img_filename):
 
     print(f"  row_spacing={row_spacing:.1f}px")
 
+    # Detect vertical lines in top and bottom halves to model tilt.
+    # Use wide bands (multiple rows) for reliable detection.
+    inner_left = EDGE_CROP_LEFT
+    inner_right = w - EDGE_CROP_RIGHT
+
+    mid_hline = hlines[len(hlines) // 2]  # middle horizontal line
+    top_band_y = (EDGE_CROP_TOP, mid_hline)
+    bot_band_y = (mid_hline, h - EDGE_CROP_BOTTOM)
+
+    top_vl = detect_vlines_in_band(gray[:, inner_left:inner_right],
+                                   top_band_y[0], top_band_y[1], N_VLINES)
+    bot_vl = detect_vlines_in_band(gray[:, inner_left:inner_right],
+                                   bot_band_y[0], bot_band_y[1], N_VLINES)
+
+    # Also get global vlines as ultimate fallback
+    raw_vlines_global = find_lines(gray_inner, axis=0, n_lines=N_VLINES)
+    global_vlines = [x + EDGE_CROP_LEFT for x in raw_vlines_global]
+    if len(global_vlines) < N_VLINES or not validate_line_spacing(global_vlines, N_VLINES, "vline"):
+        print(f"  Global vlines irregular, using evenly spaced fallback")
+        first_v = global_vlines[0] if global_vlines else EDGE_CROP_LEFT
+        last_v = global_vlines[-1] if global_vlines else w - EDGE_CROP_RIGHT
+        global_vlines = evenly_spaced_lines(first_v, last_v, N_VLINES)
+
+    # Offset to full-image coords
+    if top_vl is not None:
+        top_vl = [x + inner_left for x in top_vl]
+    if bot_vl is not None:
+        bot_vl = [x + inner_left for x in bot_vl]
+
+    # Validate and fall back as needed
+    use_interpolation = True
+    if top_vl is None or not validate_line_spacing(top_vl, N_VLINES, "top-band vline"):
+        top_vl = global_vlines
+        use_interpolation = False
+    if bot_vl is None or not validate_line_spacing(bot_vl, N_VLINES, "bot-band vline"):
+        bot_vl = global_vlines
+        use_interpolation = False
+
+    top_center_y = (top_band_y[0] + top_band_y[1]) / 2
+    bot_center_y = (bot_band_y[0] + bot_band_y[1]) / 2
+
+    if use_interpolation:
+        shift = [b - t for t, b in zip(top_vl, bot_vl)]
+        print(f"  Tilt correction: top vlines={top_vl}")
+        print(f"  Tilt correction: bot vlines={bot_vl}")
+        print(f"  Tilt correction: shift top->bot = {shift}")
+
     page_out = os.path.join(OUT_DIR, stem)
     os.makedirs(page_out, exist_ok=True)
 
@@ -165,6 +281,13 @@ def crop_page(stem, img_filename):
 
     for img_row in range(ROWS):
         row_cells = []
+        row_center_y = (row_bounds[img_row] + row_bounds[img_row + 1]) / 2
+
+        if use_interpolation:
+            vlines = interpolate_vlines(top_vl, bot_vl,
+                                        top_center_y, bot_center_y, row_center_y)
+        else:
+            vlines = global_vlines
 
         for img_col in range(COLS):
             y_top = row_bounds[img_row] + CELL_PAD
@@ -223,9 +346,7 @@ def crop_page(stem, img_filename):
 
 
 if __name__ == "__main__":
-    if os.path.exists(OUT_DIR):
-        shutil.rmtree(OUT_DIR)
-    os.makedirs(OUT_DIR)
+    os.makedirs(OUT_DIR, exist_ok=True)
 
     images = find_images(SRC_DIR)
     if not images:
