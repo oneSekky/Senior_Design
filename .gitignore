@@ -6,6 +6,9 @@ claude_*.log
 .aider*
 claude.md
 
+# macOS metadata
+.DS_Store
+
 # Large model files
 *.keras
 *.pkl
