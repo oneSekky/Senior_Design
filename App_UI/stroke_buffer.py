@@ -8,8 +8,12 @@ Approach:
     apply filtfilt (zero-phase) on the full completed stroke.
 
 Callbacks are invoked synchronously from the thread that calls feed().
-When used with Qt signals (DataSource → main thread slot → feed()), all
+When used with Qt signals (DataSource -> main thread slot -> feed()), all
 callbacks run on the main thread — no locking needed.
+
+Note: this is only used for live pen data (USB / BLE).
+Replay mode bypasses this entirely and drives inference directly from the
+recorded event timestamps.
 """
 
 from __future__ import annotations
@@ -21,11 +25,18 @@ import numpy as np
 from scipy.signal import butter, lfilter, lfilter_zi
 
 FS = 104
-ACTIVITY_THRESHOLD = 40.0   # mg on HP-filtered acc magnitude
-SMOOTH_WINDOW = 10           # samples for running mean smoothing
-MIN_STROKE_SAMPLES = 20      # shorter strokes ignored
-STROKE_END_SAMPLES = 31      # ~300 ms silence → letter complete
-WORD_GAP_SAMPLES = 83        # ~800 ms silence → word gap
+
+# How long to wait after connect before enabling stroke detection.
+# The causal HP filter needs time to adapt to the resting gravity signal.
+# At startup lfilter_zi assumes a unit-step input, not the actual ~1000 mg
+# resting acc_z, so the first ~500 samples produce a large spurious transient.
+WARMUP_SAMPLES = 500            # ~4.8 s
+
+ACTIVITY_THRESHOLD = 20.0       # mg on HP-filtered acc magnitude
+SMOOTH_WINDOW = 10              # samples for running mean smoothing
+MIN_STROKE_SAMPLES = 20         # shorter strokes ignored
+STROKE_END_SAMPLES = 52         # ~500 ms silence → letter complete
+WORD_GAP_SAMPLES = 83           # ~800 ms silence → word gap
 
 
 class _CausalHPFilter:
@@ -37,7 +48,7 @@ class _CausalHPFilter:
         self._zi = np.tile(zi_1ch[:, None], (1, n_channels)).copy()  # (order, C)
 
     def process(self, sample: np.ndarray) -> np.ndarray:
-        """sample: (n_channels,) → filtered (n_channels,)"""
+        """sample: (n_channels,) -> filtered (n_channels,)"""
         x = sample[np.newaxis, :]   # (1, C)
         out = np.empty_like(x)
         for ch in range(x.shape[1]):
@@ -57,6 +68,9 @@ class StrokeBuffer:
     (activity followed by STROKE_END_SAMPLES frames of silence) on_stroke_complete
     is called with a (N, 6) float32 array of *raw* samples (no filtering applied).
     on_word_gap is called when silence exceeds WORD_GAP_SAMPLES.
+
+    A warmup period of WARMUP_SAMPLES is observed after each reset() to let the
+    HP filter adapt to the resting gravity signal before detection begins.
     """
 
     def __init__(
@@ -70,10 +84,11 @@ class StrokeBuffer:
         self._hp = _CausalHPFilter(cutoff=0.5, fs=FS, order=3, n_channels=3)
         self._mag_win: deque[float] = deque(maxlen=SMOOTH_WINDOW)
 
-        self._raw_buf: list[np.ndarray] = []   # raw unfiltered samples
+        self._raw_buf: list[np.ndarray] = []
         self._inactive_count = 0
         self._is_active = False
         self._word_gap_fired = False
+        self._warmup_count = WARMUP_SAMPLES
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -81,8 +96,14 @@ class StrokeBuffer:
         """sample: sequence of 6 floats [ax, ay, az, gx, gy, gz] in mg/mdps."""
         s = np.asarray(sample, dtype=np.float32)
 
-        # Causal HP filter on acc only (gravity removal for detection)
+        # Always run the HP filter to keep state current
         filt_acc = self._hp.process(s[:3])
+
+        # During warmup: filter state is settling — don't detect strokes
+        if self._warmup_count > 0:
+            self._warmup_count -= 1
+            return
+
         mag = float(np.sqrt((filt_acc ** 2).sum()))
         self._mag_win.append(mag)
         smoothed = float(np.mean(self._mag_win))
@@ -94,11 +115,9 @@ class StrokeBuffer:
             self._raw_buf.append(s)
         else:
             if self._is_active:
-                # Still accumulate trailing silence so filtfilt has context
                 self._raw_buf.append(s)
                 self._inactive_count += 1
                 if self._inactive_count >= STROKE_END_SAMPLES:
-                    # Trim trailing silence and fire
                     data = np.array(self._raw_buf[:-STROKE_END_SAMPLES], dtype=np.float32)
                     if len(data) >= MIN_STROKE_SAMPLES:
                         self.on_stroke_complete(data)
@@ -106,7 +125,6 @@ class StrokeBuffer:
                     self._is_active = False
                     self._inactive_count = 0
             else:
-                # Silence between strokes — track for word gap
                 if not self._word_gap_fired:
                     self._inactive_count += 1
                     if self._inactive_count >= WORD_GAP_SAMPLES and self.on_word_gap:
@@ -125,6 +143,33 @@ class StrokeBuffer:
         """Discard all buffered data without firing callbacks."""
         self._reset_state()
 
+    # ── Commented-out calibration support ────────────────────────────────────
+    # Uncomment and wire up after the physical pen is working.
+    #
+    # def set_threshold(self, threshold: float) -> None:
+    #     """Dynamically update the activity threshold (e.g. from calibration)."""
+    #     global ACTIVITY_THRESHOLD
+    #     ACTIVITY_THRESHOLD = threshold
+    #
+    # def start_calibration(self, on_calibration_done: Callable[[float], None]) -> None:
+    #     """
+    #     Record one stroke and call on_calibration_done with the suggested
+    #     ACTIVITY_THRESHOLD = (min smoothed mag during stroke) / 2.
+    #     Call reset() first to clear any in-flight state.
+    #     """
+    #     self._calibrating = True
+    #     self._cal_callback = on_calibration_done
+    #     self._cal_mags: list[float] = []
+    #
+    # In feed(), inside the `if smoothed > ACTIVITY_THRESHOLD` branch, add:
+    #     if getattr(self, '_calibrating', False):
+    #         self._cal_mags.append(smoothed)
+    # And in the stroke-complete branch, add:
+    #     if getattr(self, '_calibrating', False) and self._cal_mags:
+    #         suggested = min(self._cal_mags) / 2.0
+    #         self._calibrating = False
+    #         self._cal_callback(suggested)
+
     def _reset_state(self) -> None:
         self._raw_buf = []
         self._mag_win.clear()
@@ -132,3 +177,4 @@ class StrokeBuffer:
         self._inactive_count = 0
         self._is_active = False
         self._word_gap_fired = False
+        self._warmup_count = WARMUP_SAMPLES

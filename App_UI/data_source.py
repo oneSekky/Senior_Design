@@ -11,8 +11,13 @@ auto-queues cross-thread signals, all signal deliveries land on the
 main thread — no explicit locking needed.
 
 Serial line format: comma-separated numbers.  Handles both:
-  • 6-column  ax,ay,az,gx,gy,gz            (simplified firmware output)
-  • 17-column time,ax,ay,az,gx,gy,gz,...   (full STEVAL CSV format)
+  6-column  ax,ay,az,gx,gy,gz            (simplified firmware output)
+  17-column time,ax,ay,az,gx,gy,gz,...   (full STEVAL CSV format)
+
+stroke_complete is only emitted by ReplaySource (never by Serial/BLE).
+It carries the exact (N, 6) float32 array of stroke samples taken directly
+from the recorded box CSV data, bypassing the stroke buffer entirely so
+that inference receives the same input the model saw during training.
 """
 
 from __future__ import annotations
@@ -23,16 +28,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
-# Nordic UART Service TX characteristic (device → host)
+# Nordic UART Service TX characteristic (device -> host)
 _NUS_TX_UUID = "6e400003-b5b3-f393-e0a9-e50e24dcca9e"
 
 
 class DataSource(QObject):
-    sample_received = pyqtSignal(list)   # [ax, ay, az, gx, gy, gz]
-    status_changed = pyqtSignal(str)     # human-readable connection status
-    error_occurred = pyqtSignal(str)     # error message
+    sample_received  = pyqtSignal(list)    # [ax, ay, az, gx, gy, gz]
+    stroke_complete  = pyqtSignal(object)  # np.ndarray (N, 6) — ReplaySource only
+    status_changed   = pyqtSignal(str)     # human-readable connection status
+    error_occurred   = pyqtSignal(str)     # error message
 
     def start(self) -> None:
         raise NotImplementedError
@@ -95,7 +102,6 @@ class SerialSource(DataSource):
         if len(nums) == 6:
             return nums
         if len(nums) >= 7:
-            # Assume first column is timestamp — skip it
             return nums[1:7]
         return None
 
@@ -145,7 +151,7 @@ class BLESource(DataSource):
             if self._device_address:
                 address = self._device_address
             else:
-                self.status_changed.emit("BLE  Scanning…")
+                self.status_changed.emit("BLE  Scanning...")
                 dev = await BleakScanner.find_device_by_name(
                     self._device_name, timeout=10.0
                 )
@@ -187,7 +193,12 @@ class BLESource(DataSource):
 class ReplaySource(DataSource):
     """
     Replays a saved .imu.json file at the original sample rate scaled by speed.
-    speed=1.0 → real-time, speed=2.0 → 2× faster, speed=100.0 → near-instant.
+    speed=1.0 -> real-time, speed=2.0 -> 2x faster, speed=100.0 -> near-instant.
+
+    Stroke detection is NOT used for replay.  Instead, stroke_complete is emitted
+    with the exact (N, 6) float32 array recorded for each stroke event in the
+    JSON.  This bypasses the causal HP filter / activity detection entirely,
+    giving the model the same input it saw during training.
     """
 
     def __init__(self, path: str, speed: float = 1.0) -> None:
@@ -211,19 +222,43 @@ class ReplaySource(DataSource):
         try:
             data = json.loads(Path(self._path).read_text())
             samples = data["samples"]
-            name = Path(self._path).stem
+            events  = sorted(data.get("events", []), key=lambda e: e["t"])
+            name    = Path(self._path).stem
             self.status_changed.emit(f"Replay  {name}")
+
+            ei           = 0          # next unmatched event index
+            stroke_accum: list = []   # raw samples being collected for current stroke
+            collecting_n = 0          # how many more samples to collect (0 = idle)
+            dt           = 1.0 / data.get("sample_rate", 104)
+            tol          = dt * 0.5   # timestamp match tolerance
 
             prev_t = 0.0
             for row in samples:
                 if not self._running:
                     break
-                t = row[0]
+
+                t     = row[0]
                 delay = (t - prev_t) / self._speed
                 if delay > 0.001:
                     time.sleep(delay)
                 prev_t = t
-                self.sample_received.emit(row[1:7])   # skip timestamp
+
+                samp = row[1:7]
+                self.sample_received.emit(samp)   # always feed activity dot + recorder
+
+                # ── Stroke event matching ────────────────────────────────────
+                if ei < len(events) and abs(t - events[ei]["t"]) < tol:
+                    # This sample is the first sample of a recorded stroke.
+                    collecting_n = events[ei]["n"]
+                    stroke_accum = [samp]
+                    ei += 1
+                elif collecting_n > 0:
+                    stroke_accum.append(samp)
+                    if len(stroke_accum) >= collecting_n:
+                        arr = np.array(stroke_accum, dtype=np.float32)
+                        self.stroke_complete.emit(arr)
+                        stroke_accum = []
+                        collecting_n = 0
 
             self.status_changed.emit("Replay complete")
         except Exception as exc:

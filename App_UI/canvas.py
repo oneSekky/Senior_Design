@@ -41,6 +41,7 @@ class CanvasWidget(QWidget):
         self._threshold: float = 0.30
         self._cursor_x: int = _MARGIN_L
         self._cursor_y: int = _MARGIN_T
+        self._scroll_y: int = 0
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -56,12 +57,14 @@ class CanvasWidget(QWidget):
             "rect": rect,
         })
         self._cursor_x += self._letter_size + _LETTER_GAP
+        self._scroll_to_bottom()
         self.update()
 
     def add_word_gap(self) -> None:
         self._items.append({"type": "gap", "pred": None, "pixmap": None, "rect": None})
         self._cursor_x += _WORD_GAP
         self._wrap_if_needed()
+        self._scroll_to_bottom()
         self.update()
 
     def undo_last(self) -> None:
@@ -79,6 +82,7 @@ class CanvasWidget(QWidget):
         self._items.clear()
         self._cursor_x = _MARGIN_L
         self._cursor_y = _MARGIN_T
+        self._scroll_y = 0
         self.update()
 
     def set_threshold(self, value: float) -> None:
@@ -163,16 +167,37 @@ class CanvasWidget(QWidget):
         self._cursor_x = x
         self._cursor_y = y
 
+    def wheelEvent(self, event) -> None:
+        delta = event.angleDelta().y()   # typically ±120 per notch
+        step = self._line_height
+        if delta > 0:
+            self._scroll_y = max(0, self._scroll_y - step)
+        else:
+            self._scroll_y = min(self._max_scroll(), self._scroll_y + step)
+        self.update()
+        event.accept()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._items:
             self._relayout()
+        self._scroll_y = min(self._scroll_y, self._max_scroll())
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.fillRect(self.rect(), Qt.GlobalColor.white)
+        p.translate(0, -self._scroll_y)
         for item in self._items:
             if item["type"] == "letter" and item["pixmap"] and item["rect"]:
                 p.drawPixmap(item["rect"].topLeft(), item["pixmap"])
         p.end()
+
+    # ── Scroll helpers ───────────────────────────────────────────────────────
+
+    def _max_scroll(self) -> int:
+        content_bottom = self._cursor_y + self._letter_size
+        return max(0, content_bottom - self.height())
+
+    def _scroll_to_bottom(self) -> None:
+        self._scroll_y = self._max_scroll()

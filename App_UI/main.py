@@ -206,6 +206,7 @@ class HandwritingApp(QMainWindow):
             on_word_gap=self._on_word_gap,
         )
         self._source: DataSource | None = None
+        self._is_replay = False   # True while a ReplaySource is active
 
         self._build_ui()
         self._build_shortcuts()
@@ -215,6 +216,47 @@ class HandwritingApp(QMainWindow):
         # Show window immediately, then load model after event loop starts
         self.show()
         QTimer.singleShot(50, self._load_model)
+
+    # ── Commented-out calibration overlay ────────────────────────────────────
+    # Uncomment this entire block once the physical pen is working.
+    # Calibration asks the user to write a circle/letter on connect so the
+    # activity threshold is auto-set to their specific pen and writing style.
+    #
+    # class _CalibrationOverlay(QWidget):
+    #     """Semi-transparent overlay shown during calibration."""
+    #     finished = pyqtSignal()
+    #
+    #     def __init__(self, parent):
+    #         super().__init__(parent)
+    #         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+    #         self.setStyleSheet("background: rgba(0,0,0,180);")
+    #         lay = QVBoxLayout(self)
+    #         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    #         self._lbl = QLabel("Write a circle to calibrate", self)
+    #         self._lbl.setStyleSheet("color:white; font-size:28px; font-weight:bold;")
+    #         self._lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    #         lay.addWidget(self._lbl)
+    #
+    #     def update_status(self, text: str) -> None:
+    #         self._lbl.setText(text)
+    #
+    #     def resizeEvent(self, e):
+    #         super().resizeEvent(e)
+    #         self.setGeometry(self.parent().rect())
+    #
+    # def _start_calibration(self) -> None:
+    #     """Show overlay and run one calibration stroke through the stroke buffer."""
+    #     self._cal_overlay = HandwritingApp._CalibrationOverlay(self)
+    #     self._cal_overlay.show()
+    #     self._stroke_buf.start_calibration(self._on_calibration_done)
+    #
+    # def _on_calibration_done(self, suggested_threshold: float) -> None:
+    #     self._cal_overlay.update_status(
+    #         f"Calibrated  (threshold = {suggested_threshold:.1f} mg)"
+    #     )
+    #     self._stroke_buf.set_threshold(suggested_threshold)
+    #     self._thresh_slider.setValue(int(suggested_threshold))
+    #     QTimer.singleShot(1500, self._cal_overlay.hide)
 
     def _load_model(self) -> None:
         self._conn_label.setText("Loading model…")
@@ -386,10 +428,21 @@ class HandwritingApp(QMainWindow):
     def _on_sample(self, sample: list) -> None:
         self._recorder.record_sample(sample)
         self._dot.pulse()
-        self._stroke_buf.feed(sample)
+        # Replay drives inference via stroke_complete events — skip stroke buffer
+        if not self._is_replay:
+            self._stroke_buf.feed(sample)
 
     def _on_stroke_complete(self, stroke: np.ndarray) -> None:
+        """Called by StrokeBuffer for live (USB/BLE) data."""
         self._recorder.record_event("stroke_complete")
+        self._run_inference(stroke)
+
+    @pyqtSlot(object)
+    def _on_stroke_from_replay(self, stroke) -> None:
+        """Called by ReplaySource for each recorded stroke event."""
+        self._run_inference(np.asarray(stroke, dtype=np.float32))
+
+    def _run_inference(self, stroke: np.ndarray) -> None:
         if self._inference is None:
             return
         pred = self._inference.predict(stroke)
@@ -430,15 +483,20 @@ class HandwritingApp(QMainWindow):
             return
         self._disconnect()
         self._source = src
+        self._is_replay = dlg.is_replay
         if dlg.is_replay:
             self.canvas.clear_all()
             self._stroke_buf.reset()
         src.sample_received.connect(self._on_sample)
+        src.stroke_complete.connect(self._on_stroke_from_replay)
         src.status_changed.connect(self._on_status)
         src.error_occurred.connect(self._on_error)
         self._recorder.start()
         self._rec_label.setVisible(True)
         src.start()
+        # To enable calibration on connect for live sources, uncomment:
+        # if not dlg.is_replay:
+        #     QTimer.singleShot(200, self._start_calibration)
 
     def _disconnect(self) -> None:
         if self._source is not None:
