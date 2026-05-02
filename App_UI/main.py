@@ -45,9 +45,9 @@ from PyQt6.QtWidgets import (
 
 from canvas import CanvasWidget
 from data_source import BLESource, DataSource, ReplaySource, SerialSource
-from inference import InferenceEngine
 from recorder import IMURecorder
 from stroke_buffer import StrokeBuffer
+# InferenceEngine imported lazily inside _load_model to avoid blocking startup
 
 
 # ── Connect dialog ────────────────────────────────────────────────────────────
@@ -199,9 +199,7 @@ class HandwritingApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Handwriting Demo")
 
-        # Load model first (raises if missing)
-        self._inference = InferenceEngine()
-
+        self._inference = None  # type: ignore[assignment]  # InferenceEngine loaded lazily
         self._recorder = IMURecorder()
         self._stroke_buf = StrokeBuffer(
             on_stroke_complete=self._on_stroke_complete,
@@ -213,7 +211,23 @@ class HandwritingApp(QMainWindow):
         self._build_shortcuts()
 
         self._recorder.start()
-        self.showFullScreen()
+
+        # Show window immediately, then load model after event loop starts
+        self.show()
+        QTimer.singleShot(50, self._load_model)
+
+    def _load_model(self) -> None:
+        self._conn_label.setText("Loading model…")
+        self._connect_btn.setEnabled(False)
+        QApplication.processEvents()
+        try:
+            from inference import InferenceEngine  # deferred: triggers torch import
+            self._inference = InferenceEngine()
+            self._conn_label.setText("Ready — click Connect to begin")
+            self._connect_btn.setEnabled(True)
+        except FileNotFoundError as exc:
+            QMessageBox.critical(self, "Missing model files", str(exc))
+            self.close()
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -376,6 +390,8 @@ class HandwritingApp(QMainWindow):
 
     def _on_stroke_complete(self, stroke: np.ndarray) -> None:
         self._recorder.record_event("stroke_complete")
+        if self._inference is None:
+            return
         pred = self._inference.predict(stroke)
         if pred is not None:
             self.canvas.add_letter(pred)
@@ -506,12 +522,7 @@ def main() -> None:
     palette.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
     app.setPalette(palette)
 
-    try:
-        window = HandwritingApp()
-    except FileNotFoundError as exc:
-        QMessageBox.critical(None, "Missing model files", str(exc))
-        sys.exit(1)
-
+    window = HandwritingApp()
     sys.exit(app.exec())
 
 
