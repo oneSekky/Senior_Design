@@ -1,12 +1,15 @@
 """
 inference.py — PyTorch IMUToImage model wrapper.
 
-Architecture (from train_side_mount.py HEAD branch):
-  Input : (B, T, 11)  — any T, global avg-pool makes it variable-length
-  Output: (B, 64, 64) logits → sigmoid → threshold for display
+Preprocessing matches train_side_mount.py (HEAD/PyTorch branch) exactly:
+  - Butterworth HP filter (gravity removal)
+  - Magnitude + velocity + position features → 11 total
+  - Window: last N_TIMESTEPS=239 samples, zero-padded at front if shorter
+  - StandardScaler applied per-feature
 
-11 features per timestep:
-  [acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, |acc|, vel_x, vel_y, pos_x, pos_y]
+This windowing is critical — the model was trained with the last 239 samples
+of each 208-sample box, zero-padded at the front. Passing arbitrary lengths
+produces degraded output.
 """
 
 import os
@@ -24,10 +27,9 @@ _MODEL_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "best_side_moun
 _SCALER_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "scaler_side_mount.pkl"
 
 FS = 104
-ACTIVITY_THRESHOLD = 40.0  # mg (on HP-filtered acc magnitude)
-SMOOTH_WINDOW = 10
-MIN_ACTIVE_SAMPLES = 20
-MERGE_GAP = 15
+# Match train_side_mount.py HEAD exactly:
+# HEAD_PAD_S=0.15, CORE_S=2.00, TAIL_PAD_S=0.15 → TOTAL_S=2.30
+N_TIMESTEPS = int(round(2.30 * FS))  # 239
 
 
 # ── Model definition (mirrors train_side_mount.py HEAD) ──────────────────────
@@ -111,24 +113,28 @@ class InferenceEngine:
                       in mg / mdps, as received from the IMU.
         Returns     : (64, 64) float32 in [0, 1] (sigmoid output), or None if too short.
         """
-        if len(raw_samples) < 10:
+        if len(raw_samples) < 5:
             return None
 
-        features = self._preprocess(raw_samples)
-        if features is None:
-            return None
-
-        scaled = self._scaler.transform(features.reshape(-1, 11)).astype(np.float32)
-        x = torch.from_numpy(scaled).unsqueeze(0)          # (1, T, 11)
+        features = self._preprocess(raw_samples)           # always (239, 11)
+        scaled = self._scaler.transform(features).astype(np.float32)
+        x = torch.from_numpy(scaled).unsqueeze(0)          # (1, 239, 11)
         with torch.no_grad():
             logits = self._model(x)                        # (1, 64, 64)
         return torch.sigmoid(logits).squeeze(0).numpy()    # (64, 64)
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
-    def _preprocess(self, data: np.ndarray) -> np.ndarray | None:
-        """Build (N, 11) feature matrix from raw (N, 6) IMU data."""
+    def _preprocess(self, data: np.ndarray) -> np.ndarray:
+        """
+        Replicate train_side_mount.py load_csv() exactly:
+          1. HP filter all 6 channels
+          2. Compute magnitude, velocity, position → 11 features
+          3. Window to N_TIMESTEPS=239: take last 239 samples,
+             zero-pad at the FRONT if the stroke is shorter.
+        """
         data = data.astype(np.float32)
+        N = len(data)
 
         # Gravity removal
         filt = np.zeros_like(data)
@@ -138,17 +144,25 @@ class InferenceEngine:
         # Magnitude (7th feature)
         mag = np.sqrt((filt[:, :3] ** 2).sum(axis=1))
 
-        # Velocity: integrate acc_xy and remove integration drift
+        # Velocity: integrate acc_xy, remove drift
         dt = 1.0 / FS
         vel = np.cumsum(filt[:, :2] * dt, axis=0)
-        if len(vel) > 9:
+        if N > 9:
             for i in range(2):
                 vel[:, i] = sp_signal.filtfilt(self._b_drift, self._a_drift, vel[:, i])
 
-        # Position: integrate velocity and remove drift
+        # Position: integrate velocity, remove drift
         pos = np.cumsum(vel * dt, axis=0)
-        if len(pos) > 9:
+        if N > 9:
             for i in range(2):
                 pos[:, i] = sp_signal.filtfilt(self._b_drift, self._a_drift, pos[:, i])
 
-        return np.hstack([filt, mag[:, None], vel, pos]).astype(np.float32)  # (N, 11)
+        features = np.hstack([filt, mag[:, None], vel, pos]).astype(np.float32)  # (N, 11)
+
+        # Window exactly as training does: last N_TIMESTEPS, zero-pad front if shorter
+        start_idx = N - N_TIMESTEPS
+        if start_idx >= 0:
+            return features[start_idx:]                                    # (239, 11)
+        else:
+            pad = np.zeros((-start_idx, 11), dtype=np.float32)
+            return np.vstack([pad, features])                              # (239, 11)
