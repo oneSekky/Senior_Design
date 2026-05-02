@@ -324,7 +324,7 @@ class HandwritingApp(QMainWindow):
         self._scale_spin = QSpinBox()
         self._scale_spin.setRange(64, 512)
         self._scale_spin.setSingleStep(32)
-        self._scale_spin.setValue(192)
+        self._scale_spin.setValue(320)
         self._scale_spin.setFixedWidth(68)
         self._scale_spin.setStyleSheet(
             "QSpinBox{background:#444;color:white;border:none;font-size:13px;padding:2px;}"

@@ -36,8 +36,8 @@ class CanvasWidget(QWidget):
 
         self._items: list[dict] = []    # {'type': 'letter'|'gap', 'pred': arr|None,
                                         #  'pixmap': QPixmap|None, 'rect': QRect|None}
-        self._letter_size: int = 192    # display px (scaled from 64)
-        self._line_height: int = 210
+        self._letter_size: int = 320    # display px (scaled from 64)
+        self._line_height: int = 340
         self._threshold: float = 0.30
         self._cursor_x: int = _MARGIN_L
         self._cursor_y: int = _MARGIN_T
