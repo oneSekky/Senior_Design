@@ -103,10 +103,16 @@ class CanvasWidget(QWidget):
         self.update()
 
     def get_canvas_image(self) -> QPixmap:
-        pm = QPixmap(self.size())
+        # Render the full content height — not just the visible scroll window.
+        # self.render() would bake in the scroll translation, cutting off earlier rows.
+        content_h = max(self.height(), self._cursor_y + self._letter_size + _MARGIN_T)
+        pm = QPixmap(self.width(), content_h)
         pm.fill(Qt.GlobalColor.white)
         p = QPainter(pm)
-        self.render(p)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        for item in self._items:
+            if item["type"] == "letter" and item["pixmap"] and item["rect"]:
+                p.drawPixmap(item["rect"].topLeft(), item["pixmap"])
         p.end()
         return pm
 
