@@ -220,7 +220,7 @@ class ReplaySource(DataSource):
 
     def _run(self) -> None:
         try:
-            data = json.loads(Path(self._path).read_text())
+            data = json.loads(Path(self._path).read_text(encoding="utf-8"))
             samples = data["samples"]
             events  = sorted(data.get("events", []), key=lambda e: e["t"])
             name    = Path(self._path).stem
@@ -263,3 +263,74 @@ class ReplaySource(DataSource):
             self.status_changed.emit("Replay complete")
         except Exception as exc:
             self.error_occurred.emit(str(exc))
+
+
+# ── MEMS Studio file watcher ──────────────────────────────────────────────────
+
+class MEMSStudioSource(DataSource):
+    """
+    Tails a CSV file written by MEMS Studio's "Save to File" feature.
+
+    Workflow:
+      1. In MEMS Studio: Browse → set a log file path → click Start.
+      2. In this app: Connect → MEMS Studio tab → same file path → OK.
+
+    The source waits for the file to appear, then seeks to the current end so
+    only *new* lines are read (historical data already in the file is skipped).
+    New lines are polled every ~20 ms, which is fast enough for 104 Hz data.
+
+    Parses the STEVAL-MKI229A CSV format:
+      time[us], acc_x[mg], acc_y[mg], acc_z[mg], gyro_x[mdps], gyro_y[mdps],
+      gyro_z[mdps], temp[C], ...
+    Comment/header lines (starting with '#' or containing non-numeric tokens)
+    are silently ignored.  The same _parse() as SerialSource handles this:
+    len(nums) >= 7 -> return nums[1:7] = [ax, ay, az, gx, gy, gz].
+    """
+
+    _POLL_INTERVAL = 0.02   # seconds between read() calls (~50 Hz poll)
+    _WAIT_INTERVAL = 0.5    # seconds between file-existence checks
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = path
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="mems_studio"
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _run(self) -> None:
+        p = Path(self._path)
+        self.status_changed.emit("MEMS Studio  waiting for file…")
+        while self._running and not p.exists():
+            time.sleep(self._WAIT_INTERVAL)
+        if not self._running:
+            return
+        try:
+            with open(self._path, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(0, 2)    # jump to end — only tail new writes
+                self.status_changed.emit(f"MEMS Studio  {p.stem}")
+                buf = ""
+                while self._running:
+                    chunk = f.read(4096)
+                    if chunk:
+                        buf += chunk
+                        lines = buf.split("\n")
+                        buf = lines[-1]
+                        for line in lines[:-1]:
+                            sample = SerialSource._parse(line.strip())
+                            if sample:
+                                self.sample_received.emit(sample)
+                    else:
+                        time.sleep(self._POLL_INTERVAL)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+        finally:
+            self.status_changed.emit("Disconnected")

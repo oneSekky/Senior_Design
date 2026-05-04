@@ -19,9 +19,9 @@ from pathlib import Path
 FS = 104          # Hz
 REST_SAMPLES = 500  # ~4.8 s between letters — enough for filter to settle
 
-_ROOT = Path(__file__).parent.parent
+_ROOT = Path(__file__).parent.parent.parent
 PAGE_DIR = _ROOT / "Test_Data" / "side_mount" / "split_csvs" / "box-page-15-2sec"
-OUT_PATH = Path(__file__).parent / "test_replay.imu.json"
+OUT_PATH = Path(__file__).parent.parent / "data_logs" / "test_replay.imu.json"
 
 COLUMNS = ["t", "acc_x[mg]", "acc_y[mg]", "acc_z[mg]",
            "gyro_x[mdps]", "gyro_y[mdps]", "gyro_z[mdps]"]

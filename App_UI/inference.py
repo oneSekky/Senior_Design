@@ -1,15 +1,17 @@
 """
 inference.py — PyTorch IMUToImage model wrapper.
 
-Preprocessing matches train_side_mount.py (HEAD/PyTorch branch) exactly:
-  - Butterworth HP filter (gravity removal)
+Preprocessing:
+  - Butterworth HP filter (gravity removal) on all 6 IMU channels
   - Magnitude + velocity + position features → 11 total
-  - Window: last N_TIMESTEPS=239 samples, zero-padded at front if shorter
+  - Time-normalise to N_TIMESTEPS=239 via linear resampling (NOT zero-padding)
   - StandardScaler applied per-feature
 
-This windowing is critical — the model was trained with the last 239 samples
-of each 208-sample box, zero-padded at the front. Passing arbitrary lengths
-produces degraded output.
+Time-normalisation means strokes of ANY duration are resampled to the same
+canonical 239-sample window.  This preserves the spatial trajectory (position
+features 8-11) exactly regardless of writing speed, and keeps velocity /
+acceleration patterns in a consistent temporal frame.  It also handles strokes
+longer than the original 2.30 s training window without discarding any data.
 """
 
 import os
@@ -159,10 +161,13 @@ class InferenceEngine:
 
         features = np.hstack([filt, mag[:, None], vel, pos]).astype(np.float32)  # (N, 11)
 
-        # Window exactly as training does: last N_TIMESTEPS, zero-pad front if shorter
-        start_idx = N - N_TIMESTEPS
-        if start_idx >= 0:
-            return features[start_idx:]                                    # (239, 11)
-        else:
-            pad = np.zeros((-start_idx, 11), dtype=np.float32)
-            return np.vstack([pad, features])                              # (239, 11)
+        # Time-normalise: resample ALL samples to N_TIMESTEPS via linear interpolation.
+        # Preserves spatial trajectory regardless of stroke duration or writing speed.
+        if N != N_TIMESTEPS:
+            x_old = np.linspace(0.0, 1.0, N)
+            x_new = np.linspace(0.0, 1.0, N_TIMESTEPS)
+            features = np.column_stack([
+                np.interp(x_new, x_old, features[:, i])
+                for i in range(features.shape[1])
+            ])
+        return features.astype(np.float32)

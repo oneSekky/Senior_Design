@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from scipy import signal as sp_signal
 from scipy.signal import lfilter, lfilter_zi
 
-_ROOT = Path(__file__).parent.parent
+_ROOT = Path(__file__).parent.parent.parent
 _MODEL_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "best_side_mount_model.pt"
 _SCALER_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "scaler_side_mount.pkl"
 _CSV_DIR = _ROOT / "Test_Data" / "side_mount" / "split_csvs" / "box-page-15-2sec"
@@ -233,7 +233,7 @@ def main():
             axes[i, c].set_xticks([]); axes[i, c].set_yticks([])
 
     plt.tight_layout()
-    out = Path(__file__).parent / "diagnose_output.png"
+    out = Path(__file__).parent / "output" / "diagnose_output.png"
     plt.savefig(out, dpi=120)
     print(f"\nSaved: {out}")
 
