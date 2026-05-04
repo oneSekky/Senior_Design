@@ -12,3 +12,6 @@ claude.md
 # Large model files
 *.keras
 *.pkl
+
+# Exception: the two files required to run App_UI without retraining
+!Signal_Processing_Algorithm/models/scaler_side_mount.pkl
