@@ -28,6 +28,10 @@ _ROOT = Path(__file__).parent.parent
 _MODEL_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "best_side_mount_model.pt"
 _SCALER_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "scaler_side_mount.pkl"
 
+_CLS_MODEL_PATH  = _ROOT / "Signal_Processing_Algorithm" / "models" / "best_side_mount_classifier.pt"
+_CLS_SCALER_PATH = _ROOT / "Signal_Processing_Algorithm" / "models" / "scaler_side_mount_cls.pkl"
+_CLS_LABEL_PATH  = _ROOT / "Signal_Processing_Algorithm" / "models" / "label_map_side_mount.pkl"
+
 FS = 104
 # Match train_side_mount.py HEAD exactly:
 # HEAD_PAD_S=0.15, CORE_S=2.00, TAIL_PAD_S=0.15 → TOTAL_S=2.30
@@ -128,6 +132,7 @@ class InferenceEngine:
     # ── Private helpers ──────────────────────────────────────────────────────
 
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
+        # shared by ClassifierEngine — keep signature stable
         """
         Replicate train_side_mount.py load_csv() exactly:
           1. HP filter all 6 channels
@@ -166,6 +171,116 @@ class InferenceEngine:
         if N != N_TIMESTEPS:
             x_old = np.linspace(0.0, 1.0, N)
             x_new = np.linspace(0.0, 1.0, N_TIMESTEPS)
+            features = np.column_stack([
+                np.interp(x_new, x_old, features[:, i])
+                for i in range(features.shape[1])
+            ])
+        return features.astype(np.float32)
+
+
+# ── Letter classifier ─────────────────────────────────────────────────────────
+
+class _ClsResBlock1D(nn.Module):
+    def __init__(self, ch: int, ks: int = 3, dil: int = 1):
+        super().__init__()
+        pad = dil * (ks - 1) // 2
+        self.net = nn.Sequential(
+            nn.Conv1d(ch, ch, ks, padding=pad, dilation=dil),
+            nn.GroupNorm(1, ch), nn.GELU(),
+            nn.Conv1d(ch, ch, ks, padding=pad, dilation=dil),
+            nn.GroupNorm(1, ch),
+        )
+
+    def forward(self, x):
+        return F.gelu(self.net(x) + x)
+
+
+class _SideMountClassifier(nn.Module):
+    def __init__(self, n_classes: int, n_feat: int = 11, hidden: int = 256):
+        super().__init__()
+        self.proj = nn.Linear(n_feat, hidden)
+        self.enc  = nn.Sequential(
+            _ClsResBlock1D(hidden, dil=1), _ClsResBlock1D(hidden, dil=2),
+            _ClsResBlock1D(hidden, dil=4), _ClsResBlock1D(hidden, dil=8),
+            _ClsResBlock1D(hidden, dil=1), _ClsResBlock1D(hidden, dil=2),
+        )
+        self.head = nn.Sequential(nn.Dropout(0.0), nn.Linear(hidden, n_classes))
+
+    def forward(self, x):
+        h = self.proj(x).permute(0, 2, 1)
+        h = self.enc(h).mean(dim=2)
+        return self.head(h)
+
+
+class ClassifierEngine:
+    """Letter classifier — predicts which letter was written from IMU data."""
+
+    def __init__(self):
+        if not _CLS_MODEL_PATH.exists():
+            raise FileNotFoundError(f"Classifier model not found: {_CLS_MODEL_PATH}")
+        if not _CLS_SCALER_PATH.exists():
+            raise FileNotFoundError(f"Classifier scaler not found: {_CLS_SCALER_PATH}")
+        if not _CLS_LABEL_PATH.exists():
+            raise FileNotFoundError(f"Classifier labels not found: {_CLS_LABEL_PATH}")
+
+        with open(_CLS_LABEL_PATH, "rb") as f:
+            lmap = pickle.load(f)
+        self._idx2label: dict = lmap["idx2label"]
+        n_classes = len(self._idx2label)
+
+        self._model = _SideMountClassifier(n_classes)
+        self._model.load_state_dict(
+            torch.load(str(_CLS_MODEL_PATH), map_location="cpu", weights_only=False)
+        )
+        self._model.eval()
+
+        with open(_CLS_SCALER_PATH, "rb") as f:
+            self._scaler = pickle.load(f)
+
+        self._b_grav,  self._a_grav  = sp_signal.butter(3, 0.5, "high", fs=FS)
+        self._b_drift, self._a_drift = sp_signal.butter(2, 0.3, "high", fs=FS)
+
+    def predict_letter(self, raw_samples: np.ndarray,
+                       k: int = 3) -> list[tuple[str, float]] | None:
+        """
+        raw_samples : (N, 6) float32 — same format as InferenceEngine.predict.
+        Returns     : top-k list of (letter, probability), or None if too short.
+        """
+        if len(raw_samples) < 5:
+            return None
+
+        features = self._preprocess(raw_samples)
+        scaled   = self._scaler.transform(features).astype(np.float32)
+        x        = torch.from_numpy(scaled).unsqueeze(0)  # (1, 239, 11)
+        with torch.no_grad():
+            probs = torch.softmax(self._model(x), dim=1).squeeze(0).numpy()
+
+        top_idx = np.argsort(probs)[::-1][:k]
+        return [(self._idx2label[int(i)], float(probs[i])) for i in top_idx]
+
+    def _preprocess(self, data: np.ndarray) -> np.ndarray:
+        data = data.astype(np.float32)
+        N    = len(data)
+
+        filt = np.zeros_like(data)
+        for i in range(6):
+            filt[:, i] = sp_signal.filtfilt(self._b_grav, self._a_grav, data[:, i])
+
+        mag = np.sqrt((filt[:, :3] ** 2).sum(axis=1))
+        dt  = 1.0 / FS
+        vel = np.cumsum(filt[:, :2] * dt, axis=0)
+        if N > 9:
+            for i in range(2):
+                vel[:, i] = sp_signal.filtfilt(self._b_drift, self._a_drift, vel[:, i])
+        pos = np.cumsum(vel * dt, axis=0)
+        if N > 9:
+            for i in range(2):
+                pos[:, i] = sp_signal.filtfilt(self._b_drift, self._a_drift, pos[:, i])
+
+        features = np.hstack([filt, mag[:, None], vel, pos]).astype(np.float32)
+        if N != N_TIMESTEPS:
+            x_old    = np.linspace(0.0, 1.0, N)
+            x_new    = np.linspace(0.0, 1.0, N_TIMESTEPS)
             features = np.column_stack([
                 np.interp(x_new, x_old, features[:, i])
                 for i in range(features.shape[1])

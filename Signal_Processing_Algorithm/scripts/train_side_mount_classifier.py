@@ -4,23 +4,24 @@ train_side_mount_classifier.py
 Train a letter classifier on side-mount accelerometer data.
 
 Architecture
-  Same 1D-ResNet encoder as the image generation model → global-avg-pool →
-  Dropout → Linear(256, n_classes).  Uses identical preprocessing to
-  App_UI/inference.py so the trained model drops straight into the UI.
+  Same 1D-ResNet encoder as the image generation model (inference.py) →
+  global-avg-pool → Dropout → Linear(256, n_classes).
+  Uses identical preprocessing to App_UI/inference.py so the trained
+  model integrates directly into the UI.
 
 Data
   Test_Data/side_mount/labels.csv  — image_path, csv_path, label
   Only rows where csv_path is non-empty and label is a single A-Z letter
-  are used.  Rows labelled SKIP are ignored.
+  are used.  SKIP rows are ignored.
 
-Outputs (written to Signal_Processing_Algorithm/models/)
-  best_side_mount_classifier.pt   — state-dict of the full classifier
+Outputs (Signal_Processing_Algorithm/models/)
+  best_side_mount_classifier.pt   — state-dict (best val accuracy)
   scaler_side_mount_cls.pkl       — StandardScaler fitted on training set
-  label_map_side_mount.pkl        — {index: letter} and {letter: index}
+  label_map_side_mount.pkl        — {label2idx, idx2label}
 
 Usage
   python train_side_mount_classifier.py
-  python train_side_mount_classifier.py --epochs 120 --lr 3e-4
+  python train_side_mount_classifier.py --epochs 150 --lr 3e-4
 """
 
 import argparse
@@ -60,7 +61,7 @@ _b_grav,  _a_grav  = sp_signal.butter(3, 0.5, "high", fs=FS)
 _b_drift, _a_drift = sp_signal.butter(2, 0.3, "high", fs=FS)
 
 
-# ── Preprocessing (identical to InferenceEngine._preprocess) ──────────────────
+# ── Preprocessing (identical to App_UI/inference.py InferenceEngine._preprocess)
 
 def preprocess(data: np.ndarray) -> np.ndarray:
     """(N, 6) raw IMU → (239, 11) feature array."""
@@ -102,9 +103,7 @@ def load_csv(path: Path) -> np.ndarray | None:
     with open(path, newline="") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("time"):   # header row
+            if not line or line.startswith("#") or line.startswith("time"):
                 continue
             parts = line.split(",")
             if len(parts) < 7:
@@ -122,15 +121,15 @@ def load_csv(path: Path) -> np.ndarray | None:
 
 def augment(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """(239, 11) → (239, 11) with random perturbations."""
-    x = x * float(rng.uniform(0.85, 1.15))
-    x = x + rng.normal(0, 0.04, x.shape).astype(np.float32)
+    x       = x * float(rng.uniform(0.85, 1.15))
+    x       = x + rng.normal(0, 0.04, x.shape).astype(np.float32)
     factor  = float(rng.uniform(0.85, 1.15))
     new_len = max(5, int(N_TIMESTEPS * factor))
     t_old   = np.linspace(0.0, 1.0, N_TIMESTEPS)
     t_new   = np.linspace(0.0, 1.0, new_len)
     x = np.column_stack([np.interp(t_new, t_old, x[:, i]) for i in range(N_FEAT)])
-    t_new2  = np.linspace(0.0, 1.0, N_TIMESTEPS)
-    x = np.column_stack([np.interp(t_new2, np.linspace(0.0, 1.0, new_len), x[:, i])
+    t_fix = np.linspace(0.0, 1.0, N_TIMESTEPS)
+    x = np.column_stack([np.interp(t_fix, np.linspace(0.0, 1.0, new_len), x[:, i])
                          for i in range(N_FEAT)])
     return x.astype(np.float32)
 
@@ -138,8 +137,7 @@ def augment(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 # ── Dataset ───────────────────────────────────────────────────────────────────
 
 class SideMountDataset(torch.utils.data.Dataset):
-    def __init__(self, samples: list[dict], label2idx: dict,
-                 scaler: StandardScaler, augment_flag: bool = False):
+    def __init__(self, samples, label2idx, scaler, augment_flag=False):
         self.samples      = samples
         self.label2idx    = label2idx
         self.scaler       = scaler
@@ -150,11 +148,11 @@ class SideMountDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, i):
-        s   = self.samples[i]
-        x   = s["features"].copy()
+        s = self.samples[i]
+        x = s["features"].copy()
         if self.augment_flag:
             x = augment(x, self._rng)
-        x   = self.scaler.transform(x).astype(np.float32)
+        x = self.scaler.transform(x).astype(np.float32)
         return torch.from_numpy(x), self.label2idx[s["label"]]
 
 
@@ -192,16 +190,15 @@ class SideMountClassifier(nn.Module):
     def forward(self, x):
         h = self.proj(x).permute(0, 2, 1)   # (B, hidden, T)
         h = self.enc(h).mean(dim=2)          # (B, hidden)
-        return self.head(h)                  # (B, n_classes)
+        return self.head(h)
 
 
-# ── Training loop ─────────────────────────────────────────────────────────────
+# ── Training ──────────────────────────────────────────────────────────────────
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # ── Load labels ──────────────────────────────────────────────────────────
     with open(LABELS_CSV, newline="") as f:
         rows = list(csv.DictReader(f))
 
@@ -221,19 +218,15 @@ def train(args):
         features = preprocess(raw)
         samples.append({"label": label, "features": features})
 
-    print(f"Loaded {len(samples)} samples")
-
     from collections import Counter
-    dist = Counter(s["label"] for s in samples)
-    print("Per-letter counts:", dict(sorted(dist.items())))
+    dist      = Counter(s["label"] for s in samples)
+    letters   = sorted(dist.keys())
+    label2idx = {l: i for i, l in enumerate(letters)}
+    idx2label = {i: l for l, i in label2idx.items()}
+    n_classes = len(letters)
 
-    letters    = sorted(dist.keys())
-    label2idx  = {l: i for i, l in enumerate(letters)}
-    idx2label  = {i: l for l, i in label2idx.items()}
-    n_classes  = len(letters)
-    print(f"Classes ({n_classes}): {letters}")
+    print(f"Loaded {len(samples)} samples, {n_classes} classes: {letters}")
 
-    # ── Train / val split (stratified) ───────────────────────────────────────
     random.seed(42)
     by_class = {l: [] for l in letters}
     for s in samples:
@@ -248,31 +241,27 @@ def train(args):
 
     print(f"Train: {len(train_samples)}  Val: {len(val_samples)}")
 
-    # ── Fit scaler on train features ─────────────────────────────────────────
-    all_train = np.vstack([s["features"] for s in train_samples])
-    scaler    = StandardScaler()
-    scaler.fit(all_train)
+    scaler = StandardScaler()
+    scaler.fit(np.vstack([s["features"] for s in train_samples]))
 
     train_ds = SideMountDataset(train_samples, label2idx, scaler, augment_flag=True)
     val_ds   = SideMountDataset(val_samples,   label2idx, scaler, augment_flag=False)
     train_dl = torch.utils.data.DataLoader(train_ds, batch_size=32, shuffle=True,  num_workers=0)
     val_dl   = torch.utils.data.DataLoader(val_ds,   batch_size=64, shuffle=False, num_workers=0)
 
-    # ── Class weights ─────────────────────────────────────────────────────────
-    y_train = np.array([label2idx[s["label"]] for s in train_samples])
-    cw      = compute_class_weight("balanced", classes=np.arange(n_classes), y=y_train)
-    cw_t    = torch.tensor(cw, dtype=torch.float32).to(device)
+    y_train   = np.array([label2idx[s["label"]] for s in train_samples])
+    cw        = compute_class_weight("balanced", classes=np.arange(n_classes), y=y_train)
+    cw_t      = torch.tensor(cw, dtype=torch.float32).to(device)
+    criterion = nn.CrossEntropyLoss(weight=cw_t, label_smoothing=0.1)
 
     model     = SideMountClassifier(n_classes).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=2e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    criterion = nn.CrossEntropyLoss(weight=cw_t)
 
     best_val_acc = 0.0
     for epoch in range(1, args.epochs + 1):
-        # train
         model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
+        tr_loss, tr_correct, tr_total = 0.0, 0, 0
         for x, y in train_dl:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
@@ -281,12 +270,11 @@ def train(args):
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            train_loss    += loss.item() * len(y)
-            train_correct += (logits.argmax(1) == y).sum().item()
-            train_total   += len(y)
+            tr_loss    += loss.item() * len(y)
+            tr_correct += (logits.argmax(1) == y).sum().item()
+            tr_total   += len(y)
         scheduler.step()
 
-        # val
         model.eval()
         val_correct, val_total = 0, 0
         with torch.no_grad():
@@ -295,28 +283,27 @@ def train(args):
                 val_correct += (model(x).argmax(1) == y).sum().item()
                 val_total   += len(y)
 
-        train_acc = train_correct / train_total
-        val_acc   = val_correct   / val_total
+        tr_acc  = tr_correct  / tr_total
+        val_acc = val_correct / val_total
+        marker  = "  *best*" if val_acc > best_val_acc else ""
 
         if epoch % 10 == 0 or epoch == 1:
-            print(f"Ep {epoch:3d}/{args.epochs}  "
-                  f"loss={train_loss/train_total:.4f}  "
-                  f"train={train_acc:.3f}  val={val_acc:.3f}"
-                  + ("  *best*" if val_acc > best_val_acc else ""))
+            print(f"Ep {epoch:3d}/{args.epochs}"
+                  f"  loss={tr_loss/tr_total:.4f}"
+                  f"  train={tr_acc:.3f}  val={val_acc:.3f}{marker}")
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), MODEL_OUT)
 
     print(f"\nBest val accuracy: {best_val_acc:.3f}")
-    print(f"Model saved: {MODEL_OUT}")
 
-    # ── Save scaler and label map ─────────────────────────────────────────────
     with open(SCALER_OUT, "wb") as f:
         pickle.dump(scaler, f)
     with open(LABEL_OUT, "wb") as f:
         pickle.dump({"label2idx": label2idx, "idx2label": idx2label}, f)
 
+    print(f"Model:  {MODEL_OUT}")
     print(f"Scaler: {SCALER_OUT}")
     print(f"Labels: {LABEL_OUT}")
 
@@ -325,7 +312,7 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int,   default=100)
+    parser.add_argument("--epochs", type=int,   default=150)
     parser.add_argument("--lr",     type=float, default=3e-4)
     args = parser.parse_args()
     train(args)

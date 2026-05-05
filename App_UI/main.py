@@ -383,13 +383,14 @@ class AccelGraphWidget(QWidget):
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class HandwritingApp(QMainWindow):
-    _inference_result = pyqtSignal(object)  # delivers (64,64) array from worker thread
+    _inference_result = pyqtSignal(object)  # delivers (image, top_k) from worker thread
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Handwriting Demo")
 
-        self._inference = None  # type: ignore[assignment]  # InferenceEngine loaded lazily
+        self._inference   = None  # type: ignore[assignment]  # InferenceEngine loaded lazily
+        self._classifier  = None  # ClassifierEngine loaded lazily (optional)
         self._recorder = IMURecorder()
         self._stroke_buf = StrokeBuffer(
             on_stroke_complete=self._on_stroke_complete,
@@ -860,8 +861,12 @@ class HandwritingApp(QMainWindow):
         self._connect_btn.setEnabled(False)
         QApplication.processEvents()
         try:
-            from inference import InferenceEngine  # deferred: triggers torch import
+            from inference import ClassifierEngine, InferenceEngine
             self._inference = InferenceEngine()
+            try:
+                self._classifier = ClassifierEngine()
+            except FileNotFoundError:
+                self._classifier = None   # classifier optional — UI still works
             self._conn_label.setText("Ready — click Connect to begin")
             self._connect_btn.setEnabled(True)
         except FileNotFoundError as exc:
@@ -1067,20 +1072,26 @@ class HandwritingApp(QMainWindow):
         if self._inference is None:
             return
         stroke_copy = stroke.copy()
-        future = self._executor.submit(self._inference.predict, stroke_copy)
+        future = self._executor.submit(self._predict_both, stroke_copy)
         future.add_done_callback(self._inference_done)
+
+    def _predict_both(self, stroke: np.ndarray):
+        image = self._inference.predict(stroke)
+        top_k = self._classifier.predict_letter(stroke, k=3) if self._classifier else None
+        return image, top_k
 
     def _inference_done(self, future) -> None:
         try:
-            pred = future.result()
+            result = future.result()
         except Exception:
             return
-        if pred is not None:
-            self._inference_result.emit(pred)
+        if result[0] is not None:
+            self._inference_result.emit(result)
 
     @pyqtSlot(object)
-    def _on_inference_result(self, pred) -> None:
-        self.canvas.add_letter(pred)
+    def _on_inference_result(self, result) -> None:
+        image, top_k = result
+        self.canvas.add_letter(image, top_k)
         self._count_label.setText(f"{self.canvas.letter_count} letters")
 
     def _on_word_gap(self) -> None:

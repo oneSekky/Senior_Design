@@ -18,14 +18,15 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt6.QtCore import QPoint, QRect, Qt
-from PyQt6.QtGui import QImage, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QWidget
 
-_MARGIN_L = 60
-_MARGIN_T = 40
-_MARGIN_R = 60
+_MARGIN_L   = 60
+_MARGIN_T   = 40
+_MARGIN_R   = 60
 _LETTER_GAP = 8    # px between adjacent letters
-_WORD_GAP = 52     # extra px for a word space
+_WORD_GAP   = 52   # extra px for a word space
+_LABEL_H    = 58   # px reserved below each letter for the prediction label
 
 
 class CanvasWidget(QWidget):
@@ -37,7 +38,7 @@ class CanvasWidget(QWidget):
         self._items: list[dict] = []    # {'type': 'letter'|'gap', 'pred': arr|None,
                                         #  'pixmap': QPixmap|None, 'rect': QRect|None}
         self._letter_size: int = 320    # display px (scaled from 64)
-        self._line_height: int = 340
+        self._line_height: int = 320 + _LABEL_H + 18
         self._threshold: float = 0.30
         self._cursor_x: int = _MARGIN_L
         self._cursor_y: int = _MARGIN_T
@@ -45,16 +46,21 @@ class CanvasWidget(QWidget):
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def add_letter(self, pred: np.ndarray) -> None:
-        """pred: (64, 64) float32 sigmoid in [0, 1].  Strokes = high values."""
+    def add_letter(self, pred: np.ndarray,
+                   top_k: list[tuple[str, float]] | None = None) -> None:
+        """
+        pred  : (64, 64) float32 sigmoid in [0, 1].  Strokes = high values.
+        top_k : [(letter, prob), ...] from ClassifierEngine, or None.
+        """
         self._wrap_if_needed()
         pixmap = self._pred_to_pixmap(pred)
         rect = QRect(self._cursor_x, self._cursor_y, self._letter_size, self._letter_size)
         self._items.append({
-            "type": "letter",
-            "pred": pred.copy(),
+            "type":   "letter",
+            "pred":   pred.copy(),
             "pixmap": pixmap,
-            "rect": rect,
+            "rect":   rect,
+            "top_k":  top_k,
         })
         self._cursor_x += self._letter_size + _LETTER_GAP
         self._scroll_to_bottom()
@@ -98,7 +104,7 @@ class CanvasWidget(QWidget):
         if size == self._letter_size:
             return
         self._letter_size = size
-        self._line_height = size + 18
+        self._line_height = size + _LABEL_H + 18
         self._relayout()
         self.update()
 
@@ -162,7 +168,7 @@ class CanvasWidget(QWidget):
                 if x + self._letter_size > self.width() - _MARGIN_R:
                     x = _MARGIN_L
                     y += self._line_height
-                item["rect"] = QRect(x, y, self._letter_size, self._letter_size)
+                item["rect"]   = QRect(x, y, self._letter_size, self._letter_size)
                 item["pixmap"] = self._pred_to_pixmap(item["pred"])
                 x += self._letter_size + _LETTER_GAP
             elif item["type"] == "gap":
@@ -194,10 +200,41 @@ class CanvasWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.fillRect(self.rect(), Qt.GlobalColor.white)
         p.translate(0, -self._scroll_y)
+
         for item in self._items:
-            if item["type"] == "letter" and item["pixmap"] and item["rect"]:
-                p.drawPixmap(item["rect"].topLeft(), item["pixmap"])
+            if item["type"] != "letter" or not item["pixmap"] or not item["rect"]:
+                continue
+            p.drawPixmap(item["rect"].topLeft(), item["pixmap"])
+            top_k = item.get("top_k")
+            if top_k:
+                self._draw_label(p, item["rect"], top_k)
+
         p.end()
+
+    def _draw_label(self, p: QPainter, rect: QRect,
+                    top_k: list[tuple[str, float]]) -> None:
+        lx = rect.x()
+        ly = rect.y() + rect.height() + 4
+        lw = rect.width()
+
+        # Top prediction — large
+        letter, conf = top_k[0]
+        f1 = QFont("Arial", max(14, rect.width() // 14), QFont.Weight.Bold)
+        p.setFont(f1)
+        p.setPen(QColor(30, 30, 30))
+        p.drawText(lx, ly, lw, 32,
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                   f"{letter}   {conf * 100:.0f}%")
+
+        # Runners-up — small
+        if len(top_k) > 1:
+            runners = "   ".join(f"{l} {c * 100:.0f}%" for l, c in top_k[1:])
+            f2 = QFont("Arial", max(10, rect.width() // 22))
+            p.setFont(f2)
+            p.setPen(QColor(140, 140, 140))
+            p.drawText(lx, ly + 28, lw, 24,
+                       Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                       runners)
 
     # ── Scroll helpers ───────────────────────────────────────────────────────
 
