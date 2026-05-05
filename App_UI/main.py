@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QKeySequence, QPalette, QShortcut
+from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPalette, QPen, QPolygonF, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -254,6 +254,130 @@ class _ActivityDot(QLabel):
     def pulse(self) -> None:
         self.setStyleSheet(self._ACTIVE)
         self._dim_timer.start(250)
+
+
+# ── Accelerometer graph ───────────────────────────────────────────────────────
+
+class AccelGraphWidget(QWidget):
+    """Stacked real-time IMU plots: accelerometer (top) + gyroscope (bottom)."""
+
+    _FS  = 104
+    _WIN = _FS * 8   # 832 samples ≈ 8 s
+
+    _ACC_LO, _ACC_HI = -2000.0,  2000.0   # mg
+    _GYR_LO, _GYR_HI = -2000.0,  2000.0   # dps (raw mdps ÷ 1000)
+    _GYR_SCALE        = 1.0 / 1000.0
+
+    _ACC_GRID = [(-2000, "-2g"), (-1000, "-1g"), (0, "0"), (1000, "1g"), (2000, "2g")]
+    _GYR_GRID = [(-2000, "-2k"), (-1000, "-1k"), (0, "0"), (1000, "1k"), (2000, "2k")]
+
+    _COLORS = (
+        QColor(255, 85,  85),
+        QColor(75,  215, 75),
+        QColor(100, 155, 255),
+    )
+    _LABELS = ("X", "Y", "Z")
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(280)
+        self.setStyleSheet("background:#111;")
+        self._bufs: list[deque] = [deque(maxlen=self._WIN) for _ in range(6)]
+        self._dirty = False
+        timer = QTimer(self)
+        timer.setInterval(33)
+        timer.timeout.connect(self._tick)
+        timer.start()
+
+    def push_sample(self, sample: list) -> None:
+        for i in range(min(6, len(sample))):
+            self._bufs[i].append(float(sample[i]))
+        self._dirty = True
+
+    def _tick(self) -> None:
+        if self._dirty:
+            self._dirty = False
+            self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        W, H = self.width(), self.height()
+        GAP  = 4
+        half = (H - GAP) // 2
+
+        self._draw_plot(p, W, 0,          half, self._bufs[:3],
+                        self._ACC_LO, self._ACC_HI, self._ACC_GRID, 1.0,
+                        "Accel (mg)")
+        self._draw_plot(p, W, half + GAP, half, self._bufs[3:],
+                        self._GYR_LO, self._GYR_HI, self._GYR_GRID, self._GYR_SCALE,
+                        "Gyro (dps)")
+
+        p.setPen(QPen(QColor(45, 45, 45), 1))
+        p.drawLine(0, half + GAP // 2, W, half + GAP // 2)
+
+    def _draw_plot(self, p: QPainter, W: int, y_off: int, H: int,
+                   bufs: list, y_lo: float, y_hi: float, grid: list,
+                   scale: float, title: str) -> None:
+        ML, MR, MT, MB = 38, 8, 21, 22
+        PW = W - ML - MR
+        PH = H - MT - MB
+        if PW < 10 or PH < 10:
+            return
+
+        p.fillRect(0, y_off, W, H, QColor(17, 17, 17))
+
+        font = p.font()
+        font.setPointSize(8)
+        p.setFont(font)
+        p.setPen(QColor(138, 138, 138))
+        p.drawText(ML, y_off + 3, PW, 15, Qt.AlignmentFlag.AlignHCenter, title)
+
+        font.setPointSize(7)
+        p.setFont(font)
+        for v, lbl in grid:
+            gy = y_off + MT + int(PH * (1.0 - (v - y_lo) / (y_hi - y_lo)))
+            p.setPen(QPen(QColor(65, 65, 65) if v == 0 else QColor(37, 37, 37), 1))
+            p.drawLine(ML, gy, ML + PW, gy)
+            p.setPen(QColor(86, 86, 86))
+            p.drawText(0, gy - 7, ML - 3, 14,
+                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, lbl)
+
+        p.setPen(QPen(QColor(60, 60, 60), 1))
+        p.drawRect(ML, y_off + MT, PW, PH)
+
+        p.setClipRect(ML, y_off + MT, PW + 1, PH + 1)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        n_total = self._WIN
+        n_fill  = len(bufs[0])
+        offset  = n_total - n_fill
+
+        for ch in range(3):
+            buf = list(bufs[ch])
+            if len(buf) < 2:
+                continue
+            poly = QPolygonF()
+            for i, raw in enumerate(buf):
+                v = raw * scale
+                x = ML + PW * (offset + i) / (n_total - 1)
+                y = y_off + MT + PH * (1.0 - (v - y_lo) / (y_hi - y_lo))
+                poly.append(QPointF(x, y))
+            p.setPen(QPen(self._COLORS[ch], 1))
+            p.drawPolyline(poly)
+
+        p.setClipping(False)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+        # Legend
+        ly  = y_off + H - MB + 7
+        seg = PW // 3
+        for i in range(3):
+            lx = ML + i * seg + 2
+            p.setPen(QPen(self._COLORS[i], 2))
+            p.drawLine(lx, ly, lx + 12, ly)
+            p.setPen(self._COLORS[i])
+            font.setPointSize(7)
+            p.setFont(font)
+            p.drawText(lx + 15, ly - 5, 22, 12, 0, self._LABELS[i])
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -755,8 +879,18 @@ class HandwritingApp(QMainWindow):
 
         vbox.addWidget(self._make_status_bar())
 
+        middle = QWidget()
+        hbox = QHBoxLayout(middle)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+
         self.canvas = CanvasWidget()
-        vbox.addWidget(self.canvas, stretch=1)
+        hbox.addWidget(self.canvas, stretch=1)
+
+        self._accel_graph = AccelGraphWidget()
+        hbox.addWidget(self._accel_graph)
+
+        vbox.addWidget(middle, stretch=1)
 
         vbox.addWidget(self._make_toolbar())
 
@@ -911,6 +1045,7 @@ class HandwritingApp(QMainWindow):
     def _on_sample(self, sample: list) -> None:
         self._recorder.record_sample(sample)
         self._dot.pulse()
+        self._accel_graph.push_sample(sample)
         if self._is_calibrating:
             self._cal_process_sample(sample)
         # Replay drives inference via stroke_complete events — skip stroke buffer
@@ -1010,6 +1145,13 @@ class HandwritingApp(QMainWindow):
             self._cal_overlay.hide()
 
     def _clear(self) -> None:
+        reply = QMessageBox.question(
+            self, "Clear Canvas", "Erase all letters?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         self.canvas.clear_all()
         self._stroke_buf.reset()
         self._recorder.start()

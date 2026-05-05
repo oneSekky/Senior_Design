@@ -1,17 +1,24 @@
-# Ignore Claude-related files in Senior_Design folder
-.claude/
-.claude_code/
-claude_*.log
-.claude_cache/
-.aider*
-claude.md
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
 
-# macOS metadata
-.DS_Store
-
-# Large model files
+# Large ML model files (not version-controlled)
 *.keras
-*.pkl
 
-# Exception: the two files required to run App_UI without retraining
-!Signal_Processing_Algorithm/models/scaler_side_mount.pkl
+# Per-epoch training snapshots (ephemeral)
+Signal_Processing_Algorithm/models/fourier_snapshot_epoch_*.png
+Signal_Processing_Algorithm/models/fourier_snapshot_best*.png
+Signal_Processing_Algorithm/models/fourier_predictions.png
+
+# OnHW in-progress outputs (commit manually when training completes)
+Signal_Processing_Algorithm/models/best_onhw_classifier.pt
+Signal_Processing_Algorithm/models/encoder_onhw.pt
+Signal_Processing_Algorithm/models/onhw_training_history.png
+Signal_Processing_Algorithm/models/onhw_confusion_matrix.png
+
+# Data collection logs
+App_UI/data_logs/
+
+# Training log files
+*.log
