@@ -49,14 +49,20 @@ N_IN_CH         = 3
 N_CLASSES       = 52
 HIDDEN          = 256
 FEAT_DIM        = 256
-DROPOUT         = 0.3
-EPOCHS          = 100
+DROPOUT         = 0.4
+EPOCHS          = 150
 BATCH_SIZE      = 128
 LR              = 3e-4
-WEIGHT_DECAY    = 1e-4
+WEIGHT_DECAY    = 2e-4
 LABEL_SMOOTHING = 0.1
 # Sequences longer than this percentile of train lengths are truncated
 MAX_LEN_PCTILE  = 99
+
+# Augmentation
+AUG_SCALE_RANGE   = (0.80, 1.20)   # amplitude scale
+AUG_NOISE_STD     = 0.05            # additive Gaussian noise (after scaling)
+AUG_WARP_RANGE    = (0.80, 1.20)   # time-warp factor (resample to this × length)
+AUG_CHAN_DROP_P   = 0.15            # probability of zeroing one random channel
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -136,16 +142,40 @@ class IMUClassifier(nn.Module):
         return self.head(self.drop(self.encoder(x, lengths)))
 
 
+# ── Augmentation ─────────────────────────────────────────────────────────────
+
+def augment_sequence(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Apply random augmentations to a (T, C) float32 sequence."""
+    # Amplitude scale
+    x = x * float(rng.uniform(*AUG_SCALE_RANGE))
+    # Additive noise
+    x = x + rng.normal(0, AUG_NOISE_STD, x.shape).astype(np.float32)
+    # Time warp: resample to a random fraction of the original length
+    factor  = float(rng.uniform(*AUG_WARP_RANGE))
+    new_len = max(5, int(len(x) * factor))
+    old_t   = np.linspace(0, 1, len(x))
+    new_t   = np.linspace(0, 1, new_len)
+    x = np.column_stack([np.interp(new_t, old_t, x[:, i])
+                         for i in range(x.shape[1])]).astype(np.float32)
+    # Channel dropout: zero one random axis
+    if rng.random() < AUG_CHAN_DROP_P:
+        x[:, int(rng.integers(0, x.shape[1]))] = 0.0
+    return x
+
+
 # ── Dataset ───────────────────────────────────────────────────────────────────
 
 class OnHWDataset(Dataset):
-    def __init__(self, X, y, label_map, scaler, channels, max_len):
+    def __init__(self, X, y, label_map, scaler, channels, max_len,
+                 augment: bool = False):
         self.X         = X
         self.y         = y
         self.label_map = label_map
         self.scaler    = scaler
         self.channels  = channels
         self.max_len   = max_len
+        self.augment   = augment
+        self._rng      = np.random.default_rng()   # per-worker rng
 
     def __len__(self):
         return len(self.X)
@@ -153,6 +183,8 @@ class OnHWDataset(Dataset):
     def __getitem__(self, idx):
         x = self.X[idx][:, self.channels].astype(np.float32)
         x = x[: self.max_len]
+        if self.augment:
+            x = augment_sequence(x, self._rng)
         x = self.scaler.transform(x).astype(np.float32)
         return torch.from_numpy(x), self.label_map[self.y[idx]], len(x)
 
@@ -336,8 +368,10 @@ def main():
     print(f"  Sequence length 99th pct (max_len): {max_len}")
     print(f"  Classes: {len(char_to_idx)}")
 
-    train_ds = OnHWDataset(X_train, y_train, char_to_idx, scaler, END_ACC_CH, max_len)
-    val_ds   = OnHWDataset(X_val,   y_val,   char_to_idx, scaler, END_ACC_CH, max_len)
+    train_ds = OnHWDataset(X_train, y_train, char_to_idx, scaler, END_ACC_CH, max_len,
+                           augment=True)
+    val_ds   = OnHWDataset(X_val,   y_val,   char_to_idx, scaler, END_ACC_CH, max_len,
+                           augment=False)
 
     # num_workers>0 requires the script to be run as __main__ (already true)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
